@@ -22,7 +22,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
 
     std.debug.print("[zftw] Listening on 0.0.0.0:8080\n", .{});
-
+    
     while (true) {
         var client_address : std.net.Address = undefined;
         var client_address_len: std.posix.socklen_t = @sizeOf(std.net.Address);
@@ -33,16 +33,42 @@ pub fn main() !void {
         };
         defer std.posix.close(socket);
 
-        std.debug.print("{} connected\n", .{ client_address });
-
-        const http_answer = try get_http_answer("Hello and goodbye", .TEXT_PLAIN);
-        defer gpa.allocator().free(http_answer);
-
-        write(socket, http_answer) catch |err| {
-            std.debug.print("error writing: {}\n", .{ err });
+        handle_connection(socket, client_address) catch |err| {
+            std.debug.print("error hanndling request: {}", .{ err });
+            continue;
         };
-        
     }
+}
+
+fn handle_connection(socket : std.posix.socket_t, client_address: std.net.Address) !void {
+    const MAX_REQUEST_SIZE = 8192;
+    const HEADER_END = "\r\n\r\n";
+
+    std.debug.print("{} connected\n", .{ client_address });
+
+    var buf = std.ArrayList(u8).init(gpa.allocator());
+    defer buf.deinit();
+
+    while (true) {
+        var temp: [512]u8 = undefined;
+        const n = try std.posix.read(socket, &temp);
+        if (n == 0) {
+            return error.NoRequest;
+        }
+
+        try buf.appendSlice(temp[0..n]);
+
+        if (buf.items.len > MAX_REQUEST_SIZE) {
+            std.debug.print("Request too large\n", .{});
+            return error.RequestTooLarge;
+        }
+
+        if (std.mem.indexOf(u8, buf.items, HEADER_END)) |_| {
+            break;
+        }
+         
+    }
+    std.debug.print("Received headers:\n{s}\n", .{buf.items});
 }
 
 fn get_http_answer(string_data: []const u8, answer_type: http_answer_type) ![]const u8 {
