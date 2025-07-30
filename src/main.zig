@@ -34,41 +34,140 @@ pub fn main() !void {
         defer std.posix.close(socket);
 
         handle_connection(socket, client_address) catch |err| {
-            std.debug.print("error hanndling request: {}", .{ err });
+            std.debug.print("error hanndling request: {}\n", .{ err });
             continue;
         };
     }
 }
 
 fn handle_connection(socket : std.posix.socket_t, client_address: std.net.Address) !void {
-    const MAX_REQUEST_SIZE = 8192;
+    const MAX_REQUEST_SIZE = 32768;
     const HEADER_END = "\r\n\r\n";
 
-    std.debug.print("{} connected\n", .{ client_address });
-
-    var buf = std.ArrayList(u8).init(gpa.allocator());
-    defer buf.deinit();
+    var headers = std.ArrayList(u8).init(gpa.allocator());
+    defer headers.deinit();
 
     while (true) {
-        var temp: [512]u8 = undefined;
+        var temp: [2048]u8 = undefined;
         const n = try std.posix.read(socket, &temp);
         if (n == 0) {
             return error.NoRequest;
         }
 
-        try buf.appendSlice(temp[0..n]);
+        try headers.appendSlice(temp[0..n]);
 
-        if (buf.items.len > MAX_REQUEST_SIZE) {
+        if (headers.items.len > MAX_REQUEST_SIZE) {
             std.debug.print("Request too large\n", .{});
             return error.RequestTooLarge;
         }
 
-        if (std.mem.indexOf(u8, buf.items, HEADER_END)) |_| {
+        if (std.mem.indexOf(u8, headers.items, HEADER_END)) |_| {
             break;
         }
          
     }
-    std.debug.print("Received headers:\n{s}\n", .{buf.items});
+
+    var headers_iter = std.mem.splitSequence(u8, headers.items, "\r\n");
+
+    var page_path: []const u8 = "";
+    var supports_content_types : bool = false;
+    var request_str : []const u8 = "";
+
+    defer std.debug.print("\n", .{});
+
+    while (headers_iter.next()) |header| {
+        if (std.mem.eql(u8, header, "")) continue;
+        
+        if (std.mem.startsWith(u8, header, "GET")) {
+            request_str = "GET";
+            var get_iter = std.mem.splitSequence(u8, header, " ");
+            while (get_iter.next()) |part| {
+                if (std.mem.eql(u8, part, "GET")) continue;
+                if (std.mem.startsWith(u8, part, "HTTP")) continue;
+
+                if (std.mem.startsWith(u8, part, "/")) {
+                    // /index.html => index.html      
+                    const part1 = part[1..];
+
+                    if (std.mem.eql(u8, part1, "")) {
+                        page_path = "index.html";
+                    }
+                }
+            }
+        } else if(std.mem.startsWith(u8, header, "Accept")) {
+            const accept_str: []const u8 = "Accept: ";
+
+            const accepted_content = header[accept_str.len..];
+
+            var accept_iter = std.mem.splitSequence(u8, accepted_content, ",");
+
+            var accept_html: bool = false;
+
+            while(accept_iter.next()) |a| {
+                if (std.mem.eql(u8, a, "*/*")) {
+                    accept_html = true;
+                    break;
+                }
+
+                if (std.mem.eql(u8, a, "text/html")) accept_html = true;
+            }
+
+            if (accept_html) {
+                supports_content_types = true;
+
+            } 
+        }
+
+    }
+
+    if (
+        !supports_content_types or 
+        std.mem.eql(u8, page_path, "") 
+       ) {
+        return error.NotCompatibleWithZLFW;
+    }
+
+    std.debug.print("[{s}] {} connected\n", .{ request_str, client_address });
+
+    const htmlFile = std.fs.cwd().openFile(page_path, .{}) catch return error.CouldntFindHTMLFile;
+    defer htmlFile.close();
+
+    var data: [4096]u8 = undefined;
+    
+    // Streaming the html file in case it's large
+    while (true) {
+        const read = try htmlFile.read(&data);
+        if (read == 0) break;
+
+        const http_answer = try get_http_answer(data[0..read], .TEXT_HTML);
+
+        try write(socket, http_answer);
+
+    }
+}
+
+fn escapeVisible(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var list = std.ArrayList(u8).init(allocator);
+
+    defer list.deinit();
+
+    for (input) |c| {
+        switch (c) {
+            '\\' => try list.appendSlice("\\\\"),
+            '\n' => try list.appendSlice("\\n"),
+            '\r' => try list.appendSlice("\\r"),
+            '\t' => try list.appendSlice("\\t"),
+            '\x08' => try list.appendSlice("\\b"),
+            '\x0C' => try list.appendSlice("\\f"),
+            '"' => try list.appendSlice("\\\""),
+            '\'' => try list.appendSlice("\\'"),
+            else => {
+                try list.append(c);
+            }
+        }
+    }
+
+    return list.toOwnedSlice();
 }
 
 fn get_http_answer(string_data: []const u8, answer_type: http_answer_type) ![]const u8 {
