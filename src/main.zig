@@ -6,6 +6,9 @@ const http_answer_type = enum {
 };
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+const orange = "\x1b[38;5;210m";
+const dark_orange = "\x1b[38;5;202m";
+const reset_color = "\x1b[0m";
 
 pub fn main() !void {
     const address = try std.net.Address.parseIp("0.0.0.0", 8080);
@@ -21,20 +24,20 @@ pub fn main() !void {
 
     defer _ = gpa.deinit();
 
-    std.debug.print("[zftw] Listening on 0.0.0.0:8080\n", .{});
+    std.debug.print("{s}[zftw] {s}Listening on 0.0.0.0:8080\n{s}", .{ orange, dark_orange, reset_color });
     
     while (true) {
         var client_address : std.net.Address = undefined;
         var client_address_len: std.posix.socklen_t = @sizeOf(std.net.Address);
 
         const socket = std.posix.accept(listener, &client_address.any, &client_address_len, 0) catch |err| {
-            std.debug.print("error accept: {}\n", .{ err });
+            std.debug.print("{s}[zftw] {s}error accept: {}\n{s}", .{ orange, dark_orange, err, reset_color });
             continue;
         };
         defer std.posix.close(socket);
 
         handle_connection(socket, client_address) catch |err| {
-            std.debug.print("error hanndling request: {}\n", .{ err });
+            std.debug.print("{s}[zftw] {s}error hanndling request: {}\n{s}", .{ orange, dark_orange, err, reset_color });
             continue;
         };
     }
@@ -114,7 +117,6 @@ fn handle_connection(socket : std.posix.socket_t, client_address: std.net.Addres
 
             if (accept_html) {
                 supports_content_types = true;
-
             } 
         }
 
@@ -127,7 +129,7 @@ fn handle_connection(socket : std.posix.socket_t, client_address: std.net.Addres
         return error.NotCompatibleWithZLFW;
     }
 
-    std.debug.print("[{s}] {} connected\n", .{ request_str, client_address });
+    std.debug.print("{s}[zftw] [{s}] {s}{} connected\n", .{ orange, request_str, dark_orange, client_address });
 
     const htmlFile = std.fs.cwd().openFile(page_path, .{}) catch return error.CouldntFindHTMLFile;
     defer htmlFile.close();
